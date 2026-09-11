@@ -264,13 +264,8 @@ static int write_block(FM_BPAMHandle* bh, const DBG_Opts* opts)
     validate_var_block(bh, opts);
     debug(opts, "(Block Write) First Record length:%d bytes used:%d\n", halfword[2], halfword[0]);
 
-  } else if (bh->dcb->dcbexlst.dcbrecfm & dcbrecf) {
-      // Pad the partial block to full block size with EBCDIC spaces
-      int pad = bh->block_size - bh->bytes_used;
-      if (pad > 0) {
-          memset((char*)bh->block + bh->bytes_used, 0x40, pad);
-      }
-      bh->dcb->dcbblksi = bh->block_size;  // always write a full block
+  } else if (bh->dcb->dcbexlst.dcbrecfm & dcbrecf) { 
+    bh->dcb->dcbblksi = bh->bytes_used;
   } else {
     errmsg(opts, "Not sure how to write a block that is not recv or recf\n");
     return 4;
