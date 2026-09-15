@@ -38,6 +38,7 @@ int dsdd_alloc(struct s99_common_text_unit* dsn, struct s99_common_text_unit* dd
     s99_fmt_dmp(opts, parms);
 #endif
     s99_prt_msg(opts, parms, rc);
+    s99_free(parms); /* free all s99_init allocations on error path */
     return IOSVC_ERR_SVC99_ALLOC_FAILURE;
   }
 
@@ -82,7 +83,9 @@ int ddfree(struct s99_common_text_unit* dd, const DBG_Opts* opts)
 
   rc = S99(parms);
   if (rc) {
-    s99_fmt_dmp(opts, parms); /* always dump on failure — not just DEBUG — so bad fields are visible */
+#ifdef DEBUG
+    s99_fmt_dmp(opts, parms); /* hex dump only in debug builds; overwrites error_buffer per errmsg call */
+#endif
     s99_prt_msg(opts, parms, rc);
     s99_free(parms);
     return rc;
