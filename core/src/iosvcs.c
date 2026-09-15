@@ -84,7 +84,7 @@ int ddfree(struct s99_common_text_unit* dd, const DBG_Opts* opts)
   rc = S99(parms);
   if (rc) {
 #ifdef DEBUG
-    s99_fmt_dmp(opts, parms); /* hex dump only in debug builds; overwrites error_buffer per errmsg call */
+    s99_fmt_dmp(opts, parms); /* hex dump only in debug builds */
 #endif
     s99_prt_msg(opts, parms, rc);
     s99_free(parms);

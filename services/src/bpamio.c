@@ -861,7 +861,7 @@ int close_pds(FM_BPAMHandle* bh, const DBG_Opts* opts)
   closecb = MALLOC31(sizeof(struct closecb));
   if (!closecb) {
     errmsg(opts, "Unable to obtain storage for CLOSE cb\n");
-    FREE24(bh->block, bh->block_size); /* release 24-bit sub-objects before freeing handle */
+    FREE24(bh->block, bh->block_size); /* release DCB, DECB and Block before freeing handle */
     FREE24(bh->decb, sizeof(struct decb));
     FREE31(bh->opencb);
     dcb_free(bh->dcb);
@@ -877,7 +877,7 @@ int close_pds(FM_BPAMHandle* bh, const DBG_Opts* opts)
 
   if (rc) {
     errmsg(opts, "Unable to perform CLOSE. rc:%d\n", rc);
-    /* DCB still open: DYNFREE would be rejected (S99ERROR 0238); skip ddfree */
+    /* release DCB, DECB and Block before freeing handle */
     FREE24(bh->block, bh->block_size);
     FREE24(bh->decb, sizeof(struct decb));
     FREE31(bh->opencb);
