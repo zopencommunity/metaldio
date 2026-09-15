@@ -861,19 +861,36 @@ int close_pds(FM_BPAMHandle* bh, const DBG_Opts* opts)
   closecb = MALLOC31(sizeof(struct closecb));
   if (!closecb) {
     errmsg(opts, "Unable to obtain storage for CLOSE cb\n");
+    FREE24(bh->block, bh->block_size); /* release DCB, DECB and Block before freeing handle */
+    FREE24(bh->decb, sizeof(struct decb));
+    FREE31(bh->opencb);
+    dcb_free(bh->dcb);
+    ddfree(&dd, opts);
+    free(bh);
     return 4;
   }
   *closecb = closecb_template;
   closecb->dcb24 = bh->dcb;
 
   rc = CLOSE(closecb);
+  FREE31(closecb); /* not needed after CLOSE returns; free on every path */
+
   if (rc) {
     errmsg(opts, "Unable to perform CLOSE. rc:%d\n", rc);
+    /* release DCB, DECB and Block before freeing handle */
+    FREE24(bh->block, bh->block_size);
+    FREE24(bh->decb, sizeof(struct decb));
+    FREE31(bh->opencb);
+    dcb_free(bh->dcb);
+    free(bh);
     return rc;
   }
 
-  rc = ddfree(&dd);
-  debug(opts, "Free DD:%s\n", bh->ddname);
+  rc = ddfree(&dd, opts);
+  if (rc) {
+    errmsg(opts, "DYNFREE (UNFREE) failed for DD:%s rc:%d - dataset may remain allocated\n",
+           bh->ddname, rc);
+  }
 
   free(bh);
 

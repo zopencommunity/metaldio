@@ -2,12 +2,14 @@
 #include <stdlib.h>
 #include <stdarg.h>
 #include <string.h>
-#include "metaldio.h"
 #include "dio.h"
 #include "mem.h"
+#include "metaldio.h"
+#include "msg.h"
 #include "s99.h"
 #include "wrappers.h"
 #include "msg.h"
+
 
 static size_t text_unit_size(struct s99_text_unit* inunit) 
 {
@@ -114,12 +116,19 @@ struct s99rb* PTR32 s99_init(enum s99_verb verb, struct s99_flag1 flag1, struct 
 		struct s99_text_unit* inunit = (struct s99_text_unit*) va_arg(arg_ptr, void*);
 		textunit[i] = calloc_text_unit(inunit);
 	}
-	pp = (unsigned int* PTR32) (&textunit[num_text_units-1]);	
+	pp = (unsigned int* PTR32) (&textunit[num_text_units-1]);   
 	*pp |= 0x80000000;
 
 	va_end(arg_ptr);
 
 	*rbxp = *rbxin;
+
+	/* Copy the S99RBXID eye-catcher into the RBX. */
+	memcpy(rbxp->s99eid, S99RBXID, sizeof(rbxp->s99eid));
+	rbxp->s99ever = S99RBXVR;
+
+	/* Clear extended message options because no message buffer is provided. */
+	memset(&rbxp->s99eopts, 0, sizeof(rbxp->s99eopts));
 
 	parms->s99rbln = sizeof(struct s99rb);
 	parms->s99verb = verb;
@@ -179,9 +188,6 @@ int s99_prt_msg(const DBG_Opts* opts, struct s99rb* PTR32 svc99parms, int svc99r
 
 	rc = S99MSG(msgparms);
 	if (rc) {
-		/* Always emit the concise human-readable failure messages so
-		 * that callers using error_buffer receive an explanation.
-		 * Guard only the raw internal dump behind the debug flag.    */
 		errmsg(opts, "SVC99MSG rc:0x%x\n", rc);
 		errmsg(opts, "IEFDB476 failed with rc:0x%x\n", rc);
 		if (opts && opts->debug) {

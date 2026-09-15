@@ -6,22 +6,30 @@ cd "${MYDIR}"
 set -e
 
 #
-# basicddfreetest - regression harness for the S0C4 fix in iosvcs.c / s99.c
+# basicddfreetest - regression harness for DYNFREE fixes in iosvcs.c /
+#                   s99.c / bpamio.c
 #
 # Changes validated:
 #
 #   iosvcs.c  ddfree() error path:
 #     Before fix: s99_fmt_dmp(stderr, parms) and s99_prt_msg(stderr, parms, rc)
 #                 stderr (FILE*) was passed where const DBG_Opts* is required;
-#                 msg.c dereferenced FILE bytes as DBG_Opts, found non-NULL
-#                 info_buffer, and wrote into garbage address -> S0C4.
-#     After fix:  s99_fmt_dmp(NULL, parms) and s99_prt_msg(NULL, parms, rc)
+#                 msg.c dereferenced FILE bytes as DBG_Opts -> S0C4.
+#     After fix:  errmsg(opts,...); s99_fmt_dmp(opts,...); s99_prt_msg(opts,...);
+#                 s99_free(parms) called on S99() error path.
 #
 #   s99.c  s99_prt_msg():
 #     Added:  if (opts && opts->debug) { s99_em_fmt_dmp(opts, msgparms); }
 #     Guard ensures s99_em_fmt_dmp() is not reached when opts==NULL.
 #
-# Three tests inside bin/basicddfreetest:
+#   bpamio.c  close_pds():
+#     Before fix: CLOSE failure path returned without calling ddfree() or
+#                 free(bh); ddfree() failure was silent and rc discarded.
+#     After fix:  CLOSE failure path calls ddfree()+free(bh) before return;
+#                 ddfree() failure emits errmsg() diagnostic; free(bh) always
+#                 called; rc propagated to caller.
+#
+# Four tests inside bin/basicddfreetest:
 #
 #   test_alloc_free_roundtrip
 #     - dsdd_alloc + ddfree on SYS1.MACLIB (success path unchanged)
@@ -34,6 +42,12 @@ set -e
 #     - calls s99_prt_msg(NULL, ...) directly with a synthetic s99rb
 #     - confirms the NULL guard in s99_prt_msg prevents any dereference
 #       of opts and that s99_em_fmt_dmp() is not reached
+#
+#   test_close_pds_dynfree_failure
+#     - opens SYS1.MACLIB for read, steals the DDname via ddfree()
+#     - calls close_pds() with the stolen DD
+#     - confirms close_pds() returns non-zero (DYNFREE failure propagated)
+#       and that no abend occurs
 #
 # SYS1.MACLIB is the only z/OS resource required; no dataset is created
 # or modified by this test.

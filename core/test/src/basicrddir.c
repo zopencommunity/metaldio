@@ -241,7 +241,7 @@ int main(int argc, char* argv[]) {
   FREE31(opencb);
 
 #if 0
-  rc = ddfree(&dd);
+  rc = ddfree(&dd, NULL);
   if (rc) {
     return 4;
   }
