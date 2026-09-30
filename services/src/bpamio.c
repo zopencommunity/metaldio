@@ -774,18 +774,26 @@ int write_member_dir_entry(const struct mstat* mstat, FM_BPAMHandle* bh, const D
   switch (rc) {
     case STOW_IFF_CC_CREATE_OK:
       rc = 0;
+      FREE24(stowlist,    sizeof(struct stowlist_iff));
+      FREE24(stowlistadd, sizeof(struct stowlist_add));
       break;
     case STOW_IFF_CC_PDS_UPDATE_UNSUPPORTED:
       debug(opts, "Member %s is in a PDS - do a STOW and not a STOW_IFF\n", mstat->name);
-      free(stowlist);
+      /* stowlist was allocated with MALLOC24 — must use FREE24, not free() */
+      FREE24(stowlist, sizeof(struct stowlist_iff));
       rc = write_pds_member_dir_entry(bh->dcb, mstat->name, stowlistadd, opts);
+      FREE24(stowlistadd, sizeof(struct stowlist_add));
       break;
     case STOW_IFF_CC_MEMBER_EXISTS:
       debug(opts, "Member %s already exists - update it.\n", mstat->name);
       rc = update_pdse_member_dir_entry(bh, mstat->name, stowlist, opts);
+      FREE24(stowlist,    sizeof(struct stowlist_iff));
+      FREE24(stowlistadd, sizeof(struct stowlist_add));
       break;
     default:
       errmsg(opts, "STOW failed for member %s create. rc:0x%x\n", mstat->name, rc);
+      FREE24(stowlist,    sizeof(struct stowlist_iff));
+      FREE24(stowlistadd, sizeof(struct stowlist_add));
       break;
   }
   return rc;
