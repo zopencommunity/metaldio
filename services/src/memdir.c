@@ -599,7 +599,7 @@ struct mstat* create_mstat(struct mstat* mstat, char* userid, const char* alias_
   }
 
   mstat->ispf_version = 1;
-  mstat->ispf_modification = 1;
+  mstat->ispf_modification = 0; /* IBM spec: MM=0 when member is first created (VV.MM = 01.00) */
   mstat->ispf_current_lines = num_lines;
   mstat->ispf_initial_lines = num_lines;
   mstat->ispf_modified_lines = num_lines;

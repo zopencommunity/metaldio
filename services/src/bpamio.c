@@ -830,8 +830,17 @@ FM_BPAMHandle* open_pds_for_read(const char* dataset, const DBG_Opts* opts)
   int rc = alloc_pds(dataset, bh, opts);
   if (!rc) {
     rc = bpam_open_read(bh, opts);
+    if (rc) {
+      /* alloc_pds succeeded but OPEN failed — free the DD to prevent DD leak */
+      struct s99_common_text_unit dd = { DUNDDNAM, 1, 0, 0 };
+      int len = strlen(bh->ddname);
+      dd.s99tulng = len;
+      memcpy(dd.s99tupar, bh->ddname, len);
+      ddfree(&dd, opts);
+    }
   }
   if (rc) {
+    free(bh);
     return NULL;
   } else {
     return bh;
@@ -847,8 +856,17 @@ FM_BPAMHandle* open_pds_for_write(const char* dataset, const DBG_Opts* opts)
   int rc = alloc_pds(dataset, bh, opts);
   if (!rc) {
     rc = bpam_open_write(bh, opts);
+    if (rc) {
+      /* alloc_pds succeeded but OPEN failed — free the DD to prevent DD leak */
+      struct s99_common_text_unit dd = { DUNDDNAM, 1, 0, 0 };
+      int len = strlen(bh->ddname);
+      dd.s99tulng = len;
+      memcpy(dd.s99tupar, bh->ddname, len);
+      ddfree(&dd, opts);
+    }
   }
   if (rc) {
+    free(bh);
     return NULL;
   } else {
     return bh;
@@ -890,6 +908,7 @@ int close_pds(FM_BPAMHandle* bh, const DBG_Opts* opts)
     FREE24(bh->decb, sizeof(struct decb));
     FREE31(bh->opencb);
     dcb_free(bh->dcb);
+    ddfree(&dd, opts); /* free DD even when CLOSE fails to prevent DD leak */
     free(bh);
     return rc;
   }
