@@ -71,15 +71,11 @@ static int bpam_open(FM_BPAMHandle* handle, int mode, const DBG_Opts* opts)
   opencb->mode = mode;
 
   rc = OPEN(opencb);
-  fprintf(stderr, "[bpamio DEBUG] bpam_open: OPEN macro rc=%d mode=%d\n", rc, mode);
   if (rc) {
     errmsg(opts, "Unable to perform OPEN. rc:%d\n", rc);
     return rc;
   }
 
-  fprintf(stderr, "[bpamio DEBUG] bpam_open: dcbdsorg[0]=0x%02x dcbdsgpo=%d\n",
-          (unsigned char)dcb->dcbdsorg[0],
-          (int)dcb->dcbdsgpo);
   if (!dcb->dcbdsgpo) {
     errmsg(opts, "Dataset is not a PDSE.\n");
     return 4;
@@ -805,16 +801,12 @@ static int alloc_pds(const char* dataset, FM_BPAMHandle* bh, const DBG_Opts* opt
   struct s99_common_text_unit dd = { DALRTDDN, 1, sizeof(DD_SYSTEM)-1, DD_SYSTEM };
   struct s99_common_text_unit stats = { DALSTATS, 1, 1, { DALSTATS_SHR } };
 
-  fprintf(stderr, "[bpamio DEBUG] alloc_pds: dsn='%s'\n", dataset);
-
   int rc = init_dsnam_text_unit(dataset, &dsn, opts);
   if (rc) {
-    fprintf(stderr, "[bpamio DEBUG] alloc_pds: init_dsnam_text_unit rc=%d\n", rc);
     return rc;
   }
   rc = dsdd_alloc(&dsn, &dd, &stats, opts);
   if (rc) {
-    fprintf(stderr, "[bpamio DEBUG] alloc_pds: dsdd_alloc (DYNALLOC SHR) rc=%d\n", rc);
     return rc;
   }
 
@@ -824,8 +816,6 @@ static int alloc_pds(const char* dataset, FM_BPAMHandle* bh, const DBG_Opts* opt
   memcpy(bh->ddname, dd.s99tupar, dd.s99tulng);
   bh->ddname[dd.s99tulng] = '\0';
 
-  fprintf(stderr, "[bpamio DEBUG] alloc_pds: allocated DD='%s' for dsn='%s'\n",
-          bh->ddname, dataset);
   debug(opts, "Allocated DD:%s to %s\n", bh->ddname, dataset);
 
   return 0;
@@ -850,25 +840,17 @@ FM_BPAMHandle* open_pds_for_read(const char* dataset, const DBG_Opts* opts)
 
 FM_BPAMHandle* open_pds_for_write(const char* dataset, const DBG_Opts* opts)
 {
-  fprintf(stderr, "[bpamio DEBUG] open_pds_for_write: dsn='%s'\n", dataset);
-
   FM_BPAMHandle*bh = calloc(sizeof(FM_BPAMHandle), 1);
   if (!bh) {
-    fprintf(stderr, "[bpamio DEBUG] open_pds_for_write: calloc failed\n");
     return bh;
   }
   int rc = alloc_pds(dataset, bh, opts);
-  fprintf(stderr, "[bpamio DEBUG] open_pds_for_write: alloc_pds rc=%d\n", rc);
   if (!rc) {
     rc = bpam_open_write(bh, opts);
-    fprintf(stderr, "[bpamio DEBUG] open_pds_for_write: bpam_open_write rc=%d\n", rc);
   }
   if (rc) {
-    fprintf(stderr, "[bpamio DEBUG] open_pds_for_write: FAILED rc=%d for '%s'\n",
-            rc, dataset);
     return NULL;
   } else {
-    fprintf(stderr, "[bpamio DEBUG] open_pds_for_write: OK for '%s'\n", dataset);
     return bh;
   }
 }
