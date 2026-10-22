@@ -11,6 +11,25 @@
 #include <sys/stat.h>
 #include <limits.h>
 #include <sys/ps.h>
+#include <_Nascii.h>
+#ifndef __e2a_l
+  size_t __e2a_l(char *buffer, size_t buflen);
+#endif
+
+/*
+ * DBG_E2A: copy up to (maxlen) bytes of an EBCDIC string (src) into a
+ * stack buffer (dst), null-terminate it, then convert to ASCII in-place
+ * so it can be safely passed to fprintf on an ASCII terminal.
+ * Usage: char _buf[N]; DBG_E2A(src, _buf, N); fprintf(stderr, "%s", _buf);
+ */
+#define DBG_E2A(src, dst, maxlen) \
+  do { \
+    size_t _n = strlen(src); \
+    if (_n >= (maxlen)) _n = (maxlen) - 1; \
+    memcpy((dst), (src), _n); \
+    (dst)[_n] = '\0'; \
+    __e2a_l((dst), _n); \
+  } while (0)
 
 #include "metaldio.h"
 
@@ -70,7 +89,8 @@ static int bpam_open(FM_BPAMHandle* handle, int mode, const DBG_Opts* opts)
   opencb->dcb24 = dcb;
   opencb->mode = mode;
 
-  fprintf(stderr, "[metaldio] Calling OPEN: ddname=%s mode=%d\n", handle->ddname, mode);
+  { char _dd[DD_MAX+1]; DBG_E2A(handle->ddname, _dd, sizeof(_dd));
+    fprintf(stderr, "[metaldio] Calling OPEN: ddname=%s mode=%d\n", _dd, mode); }
   rc = OPEN(opencb);
   fprintf(stderr, "[metaldio] OPEN returned rc:%d\n", rc);
   if (rc) {
@@ -617,7 +637,9 @@ int find_member(FM_BPAMHandle* bh, const char* mem, const DBG_Opts* opts)
   *findcb = findcb_template;
   memcpy(findcb->mname, mem, memlen);
 
-  fprintf(stderr, "[metaldio] Calling FIND: member=%.*s\n", (int)memlen, mem);
+  { char _m[9]; size_t _ml = memlen < 8 ? memlen : 8;
+    memcpy(_m, mem, _ml); _m[_ml] = '\0'; __e2a_l(_m, _ml);
+    fprintf(stderr, "[metaldio] Calling FIND: member=%s\n", _m); }
   int rc = FIND(findcb, bh->dcb);
   fprintf(stderr, "[metaldio] FIND returned rc:%d\n", rc);
 
@@ -728,8 +750,9 @@ static int write_pds_member_dir_entry(struct ihadcb* PTR32 dcb, const char* memb
   }
   stowlist->add = *stowlistadd;
 
-  fprintf(stderr, "[metaldio] Calling STOW REPLACE for PDS member: %s ttr:0x%04x%02x\n",
-        member, stowlist->add.tt, stowlist->add.r);
+  { char _m[9]; DBG_E2A(member, _m, sizeof(_m));
+    fprintf(stderr, "[metaldio] Calling STOW REPLACE for PDS member: %s ttr:0x%04x%02x\n",
+        _m, stowlist->add.tt, stowlist->add.r); }
   int rc = STOW(stowlist, dcb, STOW_R);
   fprintf(stderr, "[metaldio] STOW REPLACE returned rc:%d\n", rc);
   if (rc == STOW_REPLACE_MEMBER_DOES_NOT_EXIST || rc == STOW_CC_OK) {
@@ -753,7 +776,8 @@ static int update_pdse_member_dir_entry(FM_BPAMHandle* bh, const char* member, u
     struct smde* PTR32 smde = (struct smde* PTR32) (desp->desp_area_ptr->desb_data);
     struct smde_ext_attr* PTR32 ext_attr = (struct smde_ext_attr*) (((char*) smde) + smde->smde_ext_attr_off);
     memcpy(stowlist->iff.timestamp, ext_attr->smde_change_timestamp, STOWLIST_IFF_TIMESTAMP_LEN);
-    fprintf(stderr, "[metaldio] Calling STOW IFF (update) for PDSE member: %s\n", member);
+  { char _m[9]; DBG_E2A(member, _m, sizeof(_m));
+    fprintf(stderr, "[metaldio] Calling STOW IFF (update) for PDSE member: %s\n", _m); }
     rc = STOW(stowlist, NULL, STOW_IFF);
     fprintf(stderr, "[metaldio] STOW IFF (update) returned rc:%d\n", rc);
     if (rc != STOW_CC_OK) {
@@ -786,20 +810,23 @@ int write_member_dir_entry(const struct mstat* mstat, FM_BPAMHandle* bh, const D
   stowlist->iff.direntry = stowlistadd;
   stowlist->iff.ccsid = mstat->ext_ccsid;
 
-  fprintf(stderr, "[metaldio] STOW pre-call: member=%s memstart_ttr:0x%x ccsid:0x%x "
+  { char _m[9]; DBG_E2A(mstat->name, _m, sizeof(_m));
+    fprintf(stderr, "[metaldio] STOW pre-call: member=%s memstart_ttr:0x%x ccsid:0x%x "
         "current_lines:%d initial_lines:%d modified_lines:%d\n",
-        mstat->name, bh->memstart_ttr, mstat->ext_ccsid,
-        mstat->ispf_current_lines, mstat->ispf_initial_lines, mstat->ispf_modified_lines);
+        _m, bh->memstart_ttr, mstat->ext_ccsid,
+        mstat->ispf_current_lines, mstat->ispf_initial_lines, mstat->ispf_modified_lines); }
 
   /*
    * Assume the is a PDSE and we can STOW with IFF.
    * Also assume the member does not exist yet.
    */
-  fprintf(stderr, "[metaldio] Calling STOW IFF (create) for member: %s\n", mstat->name);
+  { char _m[9]; DBG_E2A(mstat->name, _m, sizeof(_m));
+    fprintf(stderr, "[metaldio] Calling STOW IFF (create) for member: %s\n", _m); }
   rc = STOW(stowlist, NULL, STOW_IFF);
   fprintf(stderr, "[metaldio] STOW IFF (create) returned rc:0x%x\n", rc);
-  fprintf(stderr, "[metaldio] STOW post-call: member=%s memstart_ttr:0x%x rc:0x%x\n",
-        mstat->name, bh->memstart_ttr, rc);
+  { char _m[9]; DBG_E2A(mstat->name, _m, sizeof(_m));
+    fprintf(stderr, "[metaldio] STOW post-call: member=%s memstart_ttr:0x%x rc:0x%x\n",
+        _m, bh->memstart_ttr, rc); }
   switch (rc) {
     case STOW_IFF_CC_CREATE_OK:
       rc = 0;
@@ -931,7 +958,8 @@ int close_pds(FM_BPAMHandle* bh, const DBG_Opts* opts)
   *closecb = closecb_template;
   closecb->dcb24 = bh->dcb;
 
-  fprintf(stderr, "[metaldio] Calling CLOSE: ddname=%s\n", bh->ddname);
+  { char _dd[DD_MAX+1]; DBG_E2A(bh->ddname, _dd, sizeof(_dd));
+    fprintf(stderr, "[metaldio] Calling CLOSE: ddname=%s\n", _dd); }
   rc = CLOSE(closecb);
   fprintf(stderr, "[metaldio] CLOSE returned rc:%d\n", rc);
   FREE31(closecb); /* not needed after CLOSE returns; free on every path */
@@ -1024,7 +1052,9 @@ struct desp* PTR32 find_desp(FM_BPAMHandle* bh, const char* memname, const DBG_O
   desp->desp_name_list2 = 1;
 
   /* call DESERV and get extended attributes */
-  fprintf(stderr, "[metaldio] Calling DESERV (find_desp): member=%.*s\n", (int)memlen, memname);
+  { char _m[9]; size_t _ml = memlen < 8 ? memlen : 8;
+    memcpy(_m, memname, _ml); _m[_ml] = '\0'; __e2a_l(_m, _ml);
+    fprintf(stderr, "[metaldio] Calling DESERV (find_desp): member=%s\n", _m); }
   int rc = DESERV(desp);
   fprintf(stderr, "[metaldio] DESERV (find_desp) returned rc:0x%x\n", rc);
   if (rc) {
