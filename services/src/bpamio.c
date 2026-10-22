@@ -70,7 +70,9 @@ static int bpam_open(FM_BPAMHandle* handle, int mode, const DBG_Opts* opts)
   opencb->dcb24 = dcb;
   opencb->mode = mode;
 
+  fprintf(stderr, "[metaldio] Calling OPEN: ddname=%s mode=%d\n", handle->ddname, mode);
   rc = OPEN(opencb);
+  fprintf(stderr, "[metaldio] OPEN returned rc:%d\n", rc);
   if (rc) {
     errmsg(opts, "Unable to perform OPEN. rc:%d\n", rc);
     return rc;
@@ -99,7 +101,9 @@ static int bpam_open(FM_BPAMHandle* handle, int mode, const DBG_Opts* opts)
   handle->block_size = dcb->dcbblksi;
   handle->bytes_used = 0;
 
+  fprintf(stderr, "[metaldio] Calling NOTE to record PDS start TTR\n");
   handle->pdsstart_ttr = NOTE(dcb);
+  fprintf(stderr, "[metaldio] NOTE returned pdsstart_ttr:0x%x\n", handle->pdsstart_ttr);
   handle->pdsstart_ttr_known = 1;
 
   return 0;
@@ -154,13 +158,16 @@ static int read_block(FM_BPAMHandle* bh, const DBG_Opts* opts)
   bh->decb->area = bh->block;
 
   /* Read one block */
+  fprintf(stderr, "[metaldio] Calling READ: block=%p block_size=%zu\n", bh->block, bh->block_size);
   int rc = READ(bh->decb);
+  fprintf(stderr, "[metaldio] READ returned rc:%d\n", rc);
   if (rc) {
     errmsg(opts, "Unable to perform READ. rc:%d\n", rc);
     return rc;
   }
+  fprintf(stderr, "[metaldio] Calling CHECK after READ\n");
   rc = CHECK(bh->decb);
-  debug(opts, "RC:%d from CHECK on READ of block.\n", rc);
+  fprintf(stderr, "[metaldio] CHECK (after READ) returned rc:%d\n", rc);
 
   /*
    * Initialize record offset information so that next_record can be called.
@@ -271,19 +278,25 @@ static int write_block(FM_BPAMHandle* bh, const DBG_Opts* opts)
     return 4;
   }
 
+  fprintf(stderr, "[metaldio] Calling WRITE: bytes_used=%zu block_size=%zu\n", bh->bytes_used, bh->block_size);
   int rc = WRITE(bh->decb);
+  fprintf(stderr, "[metaldio] WRITE returned rc:%d\n", rc);
   if (rc) {
     errmsg(opts, "Unable to perform WRITE. rc:%d\n", rc);
     return rc;
   }
+  fprintf(stderr, "[metaldio] Calling CHECK after WRITE\n");
   rc = CHECK(bh->decb);
+  fprintf(stderr, "[metaldio] CHECK (after WRITE) returned rc:%d\n", rc);
   if (rc) {
     errmsg(opts, "Unable to perform CHECK on WRITE. rc:%d\n", rc);
     return rc;
-  }  
+  }
 
   if (!bh->memstart_ttr_known) {
+    fprintf(stderr, "[metaldio] Calling NOTE to record member start TTR\n");
     bh->memstart_ttr = NOTE(bh->dcb);
+    fprintf(stderr, "[metaldio] NOTE returned memstart_ttr:0x%x\n", bh->memstart_ttr);
     bh->memstart_ttr_known = 1;
   }
 
@@ -513,7 +526,9 @@ struct desp* PTR32 get_desp_all(const FM_BPAMHandle* bh, const DBG_Opts* opts)
   desp->desp_areaptr_ptr = &desp->desp_area_ptr;
 
   /* call DESERV and get extended attributes */
+  fprintf(stderr, "[metaldio] Calling DESERV GET_ALL\n");
   rc = DESERV(desp);
+  fprintf(stderr, "[metaldio] DESERV GET_ALL returned rc:0x%x\n", rc);
   if (rc) {
     errmsg(opts, "Unable to PERFORM DESERV GET_ALL. rc:0x%x\n", rc);
     return NULL;
@@ -602,7 +617,9 @@ int find_member(FM_BPAMHandle* bh, const char* mem, const DBG_Opts* opts)
   *findcb = findcb_template;
   memcpy(findcb->mname, mem, memlen);
 
+  fprintf(stderr, "[metaldio] Calling FIND: member=%.*s\n", (int)memlen, mem);
   int rc = FIND(findcb, bh->dcb);
+  fprintf(stderr, "[metaldio] FIND returned rc:%d\n", rc);
 
   free(findcb);
 
@@ -623,7 +640,9 @@ int find_member(FM_BPAMHandle* bh, const char* mem, const DBG_Opts* opts)
 int read_member_dir_entry(struct desp* PTR32 desp, const DBG_Opts* opts)
 {
   /* call DESERV and get extended attributes */
+  fprintf(stderr, "[metaldio] Calling DESERV (read_member_dir_entry)\n");
   int rc = DESERV(desp);
+  fprintf(stderr, "[metaldio] DESERV (read_member_dir_entry) returned rc:0x%x\n", rc);
   if (rc) {
     errmsg(opts, "Unable to PERFORM DESERV. rc:0x%x\n", rc);
     return 4;
@@ -709,7 +728,10 @@ static int write_pds_member_dir_entry(struct ihadcb* PTR32 dcb, const char* memb
   }
   stowlist->add = *stowlistadd;
 
+  fprintf(stderr, "[metaldio] Calling STOW REPLACE for PDS member: %s ttr:0x%x\n",
+        member, STOW_GET_TTR(stowlist->add));
   int rc = STOW(stowlist, dcb, STOW_R);
+  fprintf(stderr, "[metaldio] STOW REPLACE returned rc:%d\n", rc);
   if (rc == STOW_REPLACE_MEMBER_DOES_NOT_EXIST || rc == STOW_CC_OK) {
     debug(opts, "Member %s successfully replaced\n", member);
     rc = 0;
@@ -731,7 +753,9 @@ static int update_pdse_member_dir_entry(FM_BPAMHandle* bh, const char* member, u
     struct smde* PTR32 smde = (struct smde* PTR32) (desp->desp_area_ptr->desb_data);
     struct smde_ext_attr* PTR32 ext_attr = (struct smde_ext_attr*) (((char*) smde) + smde->smde_ext_attr_off);
     memcpy(stowlist->iff.timestamp, ext_attr->smde_change_timestamp, STOWLIST_IFF_TIMESTAMP_LEN);
+    fprintf(stderr, "[metaldio] Calling STOW IFF (update) for PDSE member: %s\n", member);
     rc = STOW(stowlist, NULL, STOW_IFF);
+    fprintf(stderr, "[metaldio] STOW IFF (update) returned rc:%d\n", rc);
     if (rc != STOW_CC_OK) {
       errmsg(opts, "STOW failed for PDSE member update of %s with rc:%d\n", member, rc);
     }
@@ -762,11 +786,20 @@ int write_member_dir_entry(const struct mstat* mstat, FM_BPAMHandle* bh, const D
   stowlist->iff.direntry = stowlistadd;
   stowlist->iff.ccsid = mstat->ext_ccsid;
 
+  fprintf(stderr, "[metaldio] STOW pre-call: member=%s memstart_ttr:0x%x ccsid:0x%x "
+        "current_lines:%d initial_lines:%d modified_lines:%d\n",
+        mstat->name, bh->memstart_ttr, mstat->ext_ccsid,
+        mstat->ispf_current_lines, mstat->ispf_initial_lines, mstat->ispf_modified_lines);
+
   /*
    * Assume the is a PDSE and we can STOW with IFF.
    * Also assume the member does not exist yet.
    */
+  fprintf(stderr, "[metaldio] Calling STOW IFF (create) for member: %s\n", mstat->name);
   rc = STOW(stowlist, NULL, STOW_IFF);
+  fprintf(stderr, "[metaldio] STOW IFF (create) returned rc:0x%x\n", rc);
+  fprintf(stderr, "[metaldio] STOW post-call: member=%s memstart_ttr:0x%x rc:0x%x\n",
+        mstat->name, bh->memstart_ttr, rc);
   switch (rc) {
     case STOW_IFF_CC_CREATE_OK:
       rc = 0;
@@ -898,7 +931,9 @@ int close_pds(FM_BPAMHandle* bh, const DBG_Opts* opts)
   *closecb = closecb_template;
   closecb->dcb24 = bh->dcb;
 
+  fprintf(stderr, "[metaldio] Calling CLOSE: ddname=%s\n", bh->ddname);
   rc = CLOSE(closecb);
+  fprintf(stderr, "[metaldio] CLOSE returned rc:%d\n", rc);
   FREE31(closecb); /* not needed after CLOSE returns; free on every path */
 
   if (rc) {
@@ -989,7 +1024,9 @@ struct desp* PTR32 find_desp(FM_BPAMHandle* bh, const char* memname, const DBG_O
   desp->desp_name_list2 = 1;
 
   /* call DESERV and get extended attributes */
+  fprintf(stderr, "[metaldio] Calling DESERV (find_desp): member=%.*s\n", (int)memlen, memname);
   int rc = DESERV(desp);
+  fprintf(stderr, "[metaldio] DESERV (find_desp) returned rc:0x%x\n", rc);
   if (rc) {
     /*
      * Suppress the error only when the member was simply not found
@@ -1062,13 +1099,15 @@ int enq_dataset_member(const char* ds, const char* wmem, const DBG_Opts* opts)
   if (!rname || !qname) {
     return 4;
   }
+  fprintf(stderr, "[metaldio] Calling SYEXENQ: qname=%.8s rname=%.52s\n", qname, rname);
   int rc = SYEXENQ(qname, rname, strlen(rname));
+  fprintf(stderr, "[metaldio] SYEXENQ returned rc:%d\n", rc);
   free(rname);
   free(qname);
   return rc;
 }
 
-int deq_dataset_member(const char* ds, const char* wmem, const DBG_Opts* opts) 
+int deq_dataset_member(const char* ds, const char* wmem, const DBG_Opts* opts)
 {
   char* PTR32 rname = ispf_rname(ds, wmem, opts);
   char* PTR32 qname = ispf_qname("SPFEDIT", opts);
@@ -1076,7 +1115,9 @@ int deq_dataset_member(const char* ds, const char* wmem, const DBG_Opts* opts)
   if (!rname || !qname) {
     return 4;
   }
+  fprintf(stderr, "[metaldio] Calling SYEXDEQ: qname=%.8s rname=%.52s\n", qname, rname);
   int rc = SYEXDEQ(qname, rname, strlen(rname));
+  fprintf(stderr, "[metaldio] SYEXDEQ returned rc:%d\n", rc);
   free(rname);
   free(qname);
   return rc;
