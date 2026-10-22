@@ -728,8 +728,8 @@ static int write_pds_member_dir_entry(struct ihadcb* PTR32 dcb, const char* memb
   }
   stowlist->add = *stowlistadd;
 
-  fprintf(stderr, "[metaldio] Calling STOW REPLACE for PDS member: %s ttr:0x%x\n",
-        member, STOW_GET_TTR(stowlist->add));
+  fprintf(stderr, "[metaldio] Calling STOW REPLACE for PDS member: %s ttr:0x%04x%02x\n",
+        member, stowlist->add.tt, stowlist->add.r);
   int rc = STOW(stowlist, dcb, STOW_R);
   fprintf(stderr, "[metaldio] STOW REPLACE returned rc:%d\n", rc);
   if (rc == STOW_REPLACE_MEMBER_DOES_NOT_EXIST || rc == STOW_CC_OK) {
