@@ -686,13 +686,20 @@ int read_member_dir_entry(struct desp* PTR32 desp, const DBG_Opts* opts)
 const struct stowlist_add stowlistadd_template = { "        ", 0, 0, 0, 0 };
 static void add_mem_stats(struct stowlist_add* PTR32 sla, const struct mstat* mstat, unsigned int ttr, const DBG_Opts* opts)
 {
-  char userid[8+1] = "        "; 
+  char userid[8+1] = "        ";
   *sla = stowlistadd_template;
-  memcpy(sla->mem_name, mstat->name, strlen(mstat->name)); 
+  memcpy(sla->mem_name, mstat->name, strlen(mstat->name));
   STOW_SET_TTR((*sla), ttr);
 
   unsigned int userdata_len = sizeof(struct ispf_disk_stats)/2; /* number of halfwords of ISPF statistics */
   sla->c = userdata_len;
+
+  { char _m[9]; DBG_E2A(mstat->name, _m, sizeof(_m));
+    fprintf(stderr, "[metaldio] add_mem_stats: member=%s ttr:0x%04x%02x "
+        "ispf_stats:%d ver:%d mod:%d curr_lines:%d init_lines:%d mod_lines:%d\n",
+        _m, sla->tt, sla->r,
+        mstat->ispf_stats, mstat->ispf_version, mstat->ispf_modification,
+        mstat->ispf_current_lines, mstat->ispf_initial_lines, mstat->ispf_modified_lines); }
 
   struct ispf_disk_stats ids = { 0 };
   __getuserid(userid, sizeof(userid));
@@ -737,6 +744,9 @@ static void add_mem_stats(struct stowlist_add* PTR32 sla, const struct mstat* ms
   }
 
   memcpy(sla->user_data, &ids, sizeof(struct ispf_disk_stats));
+
+  fprintf(stderr, "[metaldio] add_mem_stats: stowlist_add packed: tt:0x%04x r:0x%02x "
+      "userdata_len:%u\n", sla->tt, sla->r, sla->c);
 }
 
 static int write_pds_member_dir_entry(struct ihadcb* PTR32 dcb, const char* member, struct stowlist_add* stowlistadd, const DBG_Opts* opts)
@@ -801,7 +811,12 @@ int write_member_dir_entry(const struct mstat* mstat, FM_BPAMHandle* bh, const D
     return 4;
   }
 
+  fprintf(stderr, "[metaldio] write_member_dir_entry: memstart_ttr:0x%x known:%d\n",
+      bh->memstart_ttr, bh->memstart_ttr_known);
   add_mem_stats(stowlistadd, mstat, bh->memstart_ttr, opts);
+  fprintf(stderr, "[metaldio] write_member_dir_entry: add_mem_stats done: "
+      "tt:0x%04x r:0x%02x userdata_halfwords:%u\n",
+      stowlistadd->tt, stowlistadd->r, stowlistadd->c);
 
   stowlist->iff = stowlistiff_template;
 
