@@ -14,6 +14,14 @@ struct opencb {
 
 #define OPEN_INPUT (0)
 #define OPEN_OUTPUT (0xF)
+/*
+ * OPEN UPDAT: data set is updated in place (see z/OS DFSMS Macro Instructions
+ * for Data Sets, SC23-6852, OPEN macro).
+ * FIXME: the numeric option-byte value for UPDAT has NOT been verified.
+ * Verify by assembling OPEN (dcb,(UPDAT)),MF=L or reading SYS1.MACLIB(OPEN)
+ * before relying on this value.
+ */
+#define OPEN_UPDATE (0x4)
 #pragma pack(pop)
 
 #endif

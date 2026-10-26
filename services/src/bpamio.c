@@ -56,8 +56,13 @@ static int bpam_open(FM_BPAMHandle* handle, int mode, const DBG_Opts* opts)
     case OPEN_OUTPUT:
       dcb->dcbmacr.dcbmacr2 = dcbmrwrt|dcbmrpt2;
       break;
+    case OPEN_UPDATE:
+      /* UPDAT needs both READ and WRITE (and POINT/FIND) */
+      dcb->dcbmacr.dcbmacr1 = dcbmrrd|dcbmrpt1;
+      dcb->dcbmacr.dcbmacr2 = dcbmrwrt|dcbmrpt2;
+      break;
     default:
-      errmsg(opts, "bpam_open function only supports INPUT and OUTPUT. %d specified\n", mode);
+      errmsg(opts, "bpam_open function only supports INPUT, OUTPUT and UPDATE. %d specified\n", mode);
       return 4;
   }
 
@@ -113,6 +118,11 @@ static int bpam_open_read(FM_BPAMHandle* handle, const DBG_Opts* opts)
 static int bpam_open_write(FM_BPAMHandle* handle, const DBG_Opts* opts)
 {
   return bpam_open(handle, OPEN_OUTPUT, opts);
+}
+
+static int bpam_open_update(FM_BPAMHandle* handle, const DBG_Opts* opts)
+{
+  return bpam_open(handle, OPEN_UPDATE, opts);
 }
 
 static void validate_var_block(FM_BPAMHandle* bh, const DBG_Opts* opts)
@@ -710,6 +720,7 @@ static int write_pds_member_dir_entry(struct ihadcb* PTR32 dcb, const char* memb
   stowlist->add = *stowlistadd;
 
   int rc = STOW(stowlist, dcb, STOW_R);
+  FREE24(stowlist, sizeof(struct stowlist_add));
   if (rc == STOW_REPLACE_MEMBER_DOES_NOT_EXIST || rc == STOW_CC_OK) {
     debug(opts, "Member %s successfully replaced\n", member);
     rc = 0;
@@ -720,22 +731,35 @@ static int write_pds_member_dir_entry(struct ihadcb* PTR32 dcb, const char* memb
   return rc;
 }
 
+/*
+ * Update the directory entry of an existing member using STOW IFF (PDSE).
+ * Returns STOW_IFF_CC_PDS_UPDATE_UNSUPPORTED when the caller should use STOW R instead
+ * (PDS, or no extended attributes/timestamp available from DESERV).
+ */
 static int update_pdse_member_dir_entry(FM_BPAMHandle* bh, const char* member, union stowlist* stowlist, const DBG_Opts* opts)
 {
-  int rc;
+  int rc = 4;
   struct desp* PTR32 desp = init_desp(bh, member, opts);
+  if (!desp) {
+    return rc;
+  }
   if (!read_member_dir_entry(desp, opts)) {
     /*
      * Try again and perform an UPDATE
      */
     struct smde* PTR32 smde = (struct smde* PTR32) (desp->desp_area_ptr->desb_data);
-    struct smde_ext_attr* PTR32 ext_attr = (struct smde_ext_attr*) (((char*) smde) + smde->smde_ext_attr_off);
-    memcpy(stowlist->iff.timestamp, ext_attr->smde_change_timestamp, STOWLIST_IFF_TIMESTAMP_LEN);
-    rc = STOW(stowlist, NULL, STOW_IFF);
-    if (rc != STOW_CC_OK) {
-      errmsg(opts, "STOW failed for PDSE member update of %s with rc:%d\n", member, rc);
+    if (smde->smde_ext_attr_off == 0) {
+      rc = STOW_IFF_CC_PDS_UPDATE_UNSUPPORTED;
+    } else {
+      struct smde_ext_attr* PTR32 ext_attr = (struct smde_ext_attr*) (((char*) smde) + smde->smde_ext_attr_off);
+      memcpy(stowlist->iff.timestamp, ext_attr->smde_change_timestamp, STOWLIST_IFF_TIMESTAMP_LEN);
+      rc = STOW(stowlist, NULL, STOW_IFF);
+      if (rc != STOW_CC_OK && rc != STOW_IFF_CC_PDS_UPDATE_UNSUPPORTED) {
+        errmsg(opts, "STOW failed for PDSE member update of %s with rc:0x%x\n", member, rc);
+      }
     }
   }
+  free_desp(desp, opts);
   return rc;
 }
 
@@ -762,28 +786,44 @@ int write_member_dir_entry(const struct mstat* mstat, FM_BPAMHandle* bh, const D
   stowlist->iff.direntry = stowlistadd;
   stowlist->iff.ccsid = mstat->ext_ccsid;
 
-  /*
-   * Assume the is a PDSE and we can STOW with IFF.
-   * Also assume the member does not exist yet.
-   */
-  rc = STOW(stowlist, NULL, STOW_IFF);
-  switch (rc) {
-    case STOW_IFF_CC_CREATE_OK:
-      rc = 0;
-      break;
-    case STOW_IFF_CC_PDS_UPDATE_UNSUPPORTED:
-      debug(opts, "Member %s is in a PDS - do a STOW and not a STOW_IFF\n", mstat->name);
-      free(stowlist);
+  if (bh->update_existing) {
+    /*
+     * DCB was opened for UPDAT and positioned with FIND on an existing member.
+     * Do not attempt a create. Use STOW IFF update for a PDSE; fall back to
+     * STOW R for a PDS (or when no PDSE timestamp is available).
+     */
+    rc = update_pdse_member_dir_entry(bh, mstat->name, stowlist, opts);
+    if (rc == STOW_IFF_CC_PDS_UPDATE_UNSUPPORTED) {
+      debug(opts, "Member %s: no STOW IFF update possible - do a STOW R\n", mstat->name);
       rc = write_pds_member_dir_entry(bh->dcb, mstat->name, stowlistadd, opts);
-      break;
-    case STOW_IFF_CC_MEMBER_EXISTS:
-      debug(opts, "Member %s already exists - update it.\n", mstat->name);
-      rc = update_pdse_member_dir_entry(bh, mstat->name, stowlist, opts);
-      break;
-    default:
-      errmsg(opts, "STOW failed for member %s create. rc:0x%x\n", mstat->name, rc);
-      break;
+    } else if (rc == STOW_CC_OK) {
+      rc = 0;
+    }
+  } else {
+    /*
+     * Assume the is a PDSE and we can STOW with IFF.
+     * Also assume the member does not exist yet.
+     */
+    rc = STOW(stowlist, NULL, STOW_IFF);
+    switch (rc) {
+      case STOW_IFF_CC_CREATE_OK:
+        rc = 0;
+        break;
+      case STOW_IFF_CC_PDS_UPDATE_UNSUPPORTED:
+        debug(opts, "Member %s is in a PDS - do a STOW and not a STOW_IFF\n", mstat->name);
+        rc = write_pds_member_dir_entry(bh->dcb, mstat->name, stowlistadd, opts);
+        break;
+      case STOW_IFF_CC_MEMBER_EXISTS:
+        debug(opts, "Member %s already exists - update it.\n", mstat->name);
+        rc = update_pdse_member_dir_entry(bh, mstat->name, stowlist, opts);
+        break;
+      default:
+        errmsg(opts, "STOW failed for member %s create. rc:0x%x\n", mstat->name, rc);
+        break;
+    }
   }
+  FREE24(stowlist, sizeof(struct stowlist_iff));
+  FREE24(stowlistadd, sizeof(struct stowlist_add));
   return rc;
 }
 
@@ -843,6 +883,24 @@ FM_BPAMHandle* open_pds_for_write(const char* dataset, const DBG_Opts* opts)
   if (rc) {
     return NULL;
   } else {
+    return bh;
+  }
+}
+
+FM_BPAMHandle* open_pds_for_update(const char* dataset, const DBG_Opts* opts)
+{
+  FM_BPAMHandle*bh = calloc(sizeof(FM_BPAMHandle), 1);
+  if (!bh) {
+    return bh;
+  }
+  int rc = alloc_pds(dataset, bh, opts);
+  if (!rc) {
+    rc = bpam_open_update(bh, opts);
+  }
+  if (rc) {
+    return NULL;
+  } else {
+    bh->update_existing = 1;
     return bh;
   }
 }
