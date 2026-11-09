@@ -130,6 +130,9 @@ int CHECK(struct decb* PTR32 decb)
 }
 unsigned NOTE(struct ihadcb* PTR32 dcb)
 {
+  if (!dcb) {
+    return 0;
+  }
   return NOTEA(dcb);
 }
 unsigned POINT(struct ihadcb* PTR32 dcb, unsigned int ttr)
