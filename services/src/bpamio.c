@@ -887,6 +887,13 @@ FM_BPAMHandle* open_pds_for_write(const char* dataset, const DBG_Opts* opts)
   }
 }
 
+/*
+ * open_pds_for_update: like open_pds_for_write but opens the DCB for UPDAT so that the
+ * directory entry of an EXISTING member can be altered without rewriting the member.
+ * Position with find_member before calling writememdir_entry. Works for PDS (STOW R)
+ * and PDSE (STOW IFF update). Call close_pds to free the underlying resources.
+ */
+
 FM_BPAMHandle* open_pds_for_update(const char* dataset, const DBG_Opts* opts)
 {
   FM_BPAMHandle*bh = calloc(sizeof(FM_BPAMHandle), 1);
