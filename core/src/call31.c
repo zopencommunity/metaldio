@@ -1,8 +1,6 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <stdarg.h>
-#include <string.h>
-#include <unistd.h>
 #include "metaldio.h"
 #include "wrappers.h"
 
@@ -13,44 +11,7 @@
 	#pragma linkage(CALL31A, OS)
 	int CALL31A(int* fn, char* dsa, unsigned int* parms);
 
-	/*
-	 * TEMPORARY DIAGNOSTICS (0C1 in call31asm, devZoauPython build 427).
-	 *
-	 * This file is compiled by xlc (EBCDIC) but the process stderr is read as
-	 * ASCII, so each message is formatted into a buffer, converted with
-	 * __e2a_l() and written with write(2).  write() is unbuffered, so the
-	 * LAST "[call31] CALL" line printed before the CEE3201S abend identifies
-	 * the exact failing call (function name, addresses, parameters).
-	 *
-	 * Controlled by the DEBUG_CALL31ASM compile-time macro; default ON for
-	 * now.  Build with -DCALL31_NODEBUG to compile it out.  Only the first
-	 * CALL31_MAX_TRACE calls are traced; anomalies are always reported.
-	 */
-	#ifndef CALL31_NODEBUG
-	#define CALL31_DEBUG 1
-	#define CALL31_MAX_TRACE 60
-	#define BAR_2GB 0x80000000UL
-
-	/* __e2a_l() is already declared by <unistd.h>; do not redeclare it
-	   (CCN3343).  All messages are < 300 bytes, so vsprintf into a 512
-	   byte buffer is safe (vsnprintf is not prototyped at xlc's default
-	   language level). */
-	static unsigned long call31_seq = 0;
-
-	static void call31_dbg(const char* fmt, ...) {
-		char buf[512];
-		va_list ap;
-		int n;
-		va_start(ap, fmt);
-		n = vsprintf(buf, fmt, ap);
-		va_end(ap);
-		if (n < 0) return;
-		if (n > (int)sizeof(buf) - 2) n = (int)sizeof(buf) - 2;
-		buf[n++] = '\n';
-		__e2a_l(buf, (size_t)n);
-		write(2, buf, (size_t)n);
-	}
-	#endif
+//#define DEBUG_CALL31ASM 1
 
 	int call31asm(const char* fn_name, int* fn, unsigned int num_parms, ...) {
 		   va_list args;
@@ -58,78 +19,25 @@
 		   int rc;
 		   unsigned int* r1_31bit_parms = __malloc31(num_parms*sizeof(unsigned int));
 		   char* r13_31bit_dsa = __malloc31(MAX_DSA_SIZE);
-#ifdef CALL31_DEBUG
-		   unsigned long seq = ++call31_seq;
-		   int trace = (seq <= CALL31_MAX_TRACE);
-		   int anomaly = 0;
-		   va_list args_dbg;
-#endif
 
 		   va_start(args, num_parms);
-#ifdef CALL31_DEBUG
-		   /* Anomaly 1: target routine is not addressable in 31 bits.
-		      CALL31A does OILH 15,X'8000' + BASSM, which truncates the
-		      address to 31 bits; a target >= 2GB branches to a wrong place. */
-		   if (((unsigned long)fn) >= BAR_2GB) {
-			   anomaly = 1;
-			   call31_dbg("[call31] ANOMALY #%lu %s: target fn=%p is ABOVE the 2GB bar; "
-			              "BASSM will truncate it -> bad branch",
-			              seq, fn_name, (void*)fn);
-		   }
-		   /* Anomaly 2: __malloc31 failed. */
-		   if (r1_31bit_parms == NULL && num_parms > 0) {
-			   anomaly = 1;
-			   call31_dbg("[call31] ANOMALY #%lu %s: __malloc31(parms) returned NULL",
-			              seq, fn_name);
-		   }
-		   if (r13_31bit_dsa == NULL) {
-			   anomaly = 1;
-			   call31_dbg("[call31] ANOMALY #%lu %s: __malloc31(dsa) returned NULL",
-			              seq, fn_name);
-		   }
-		   if (trace || anomaly) {
-		    call31_dbg("[call31] ENTER #%lu name=%s fn=%p CALL31A=%p num_parms=%u "
-		               "parms31=%p dsa31=%p",
-		               seq, fn_name, (void*)fn, (void*)CALL31A, num_parms,
-		               (void*)r1_31bit_parms, (void*)r13_31bit_dsa);
-		   }
-		   /* Separate read-only pass over the varargs (own va_start, no
-		      va_copy needed).  Reads each slot as a full 64-bit value so a
-		      pointer above the bar is visible; the real copy loop below is
-		      unchanged.  For genuine 'int' args (ttr, len, rname_len) the
-		      upper 32 bits are not meaningful - only trust the flag on
-		      pointer parms. */
-		   va_start(args_dbg, num_parms);
-		   for (i=0; i<num_parms; ++i) {
-		    unsigned long full = va_arg(args_dbg, unsigned long);
-		    int upper_set = (full > 0xFFFFFFFFUL);
-		    if (trace || upper_set) {
-		     call31_dbg("[call31]   #%lu %s parm[%u] full64=0x%016lx%s",
-		                seq, fn_name, i, full,
-		                upper_set ? "  <-- upper32 set (pointer above bar? ignore if int arg)" : "");
-		    }
-		   }
-		   va_end(args_dbg);
+#if DEBUG_CALL31ASM
+		   tracemsg("Function Name: %s Function Pointer:0x%p", LOGMSG_CLASS_VERBOSE, fn_name, fn);
+		   tracemsg("Number of parameters:%d Parm list:%p New DSA:%p", LOGMSG_CLASS_VERBOSE, num_parms, r1_31bit_parms, r13_31bit_dsa);
 #endif
 		   for (i=0; i<num_parms; ++i) {
-		    unsigned int parm = va_arg(args, unsigned int);
-		    r1_31bit_parms[i] = parm;
+			   unsigned int parm = va_arg(args, unsigned int);
+			   r1_31bit_parms[i] = parm;
+#if DEBUG_CALL31ASM
+			   tracemsg("Parameter %d: 0x%8.8x", LOGMSG_CLASS_VERBOSE, i, parm);
+#endif
 		   }
 		   va_end(args);
-#ifdef CALL31_DEBUG
-		   if (trace || anomaly) {
-			   call31_dbg("[call31] CALL  #%lu %s -> CALL31A(fn=%p, dsa=%p, parms=%p)",
-			              seq, fn_name, (void*)fn, (void*)r13_31bit_dsa,
-			              (void*)r1_31bit_parms);
-		   }
-#endif
 
 		   rc = CALL31A(fn, r13_31bit_dsa, r1_31bit_parms);
 
-#ifdef CALL31_DEBUG
-		   if (trace || anomaly) {
-			   call31_dbg("[call31] RET   #%lu %s rc=%d", seq, fn_name, rc);
-		   }
+#if DEBUG_CALL31ASM
+		   tracemsg("Return code:%d", LOGMSG_CLASS_VERBOSE, rc);
 #endif
 
 		   if (r1_31bit_parms) free(r1_31bit_parms);
