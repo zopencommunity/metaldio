@@ -134,7 +134,7 @@ struct s99_text_unit {
  * XLC allocates storage for a bit-field container in units of
  * min(sizeof(container_type), pack_boundary).  With pack boundary == 1, an
  * unsigned int container is packed to 1 byte, so sizeof(s99_eopts) ==
- * sizeof(s99_emgsv) == 1 — matching the SVC99 extended-RB layout exactly. */
+ * sizeof(s99_emgsv) == 1 - matching the SVC99 extended-RB layout exactly. */
 struct s99_eopts {
 	unsigned int s99eimsg:1;
 	unsigned int s99ermsg:1;
