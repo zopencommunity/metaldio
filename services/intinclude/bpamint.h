@@ -15,6 +15,7 @@
     unsigned int pdsstart_ttr;
     int memstart_ttr_known:1;
     int pdsstart_ttr_known:1;
+    int update_existing:1;  /* opened with open_pds_for_update; member already exists */
     size_t line_num;
   };
 

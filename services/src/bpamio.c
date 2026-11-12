@@ -56,8 +56,13 @@ static int bpam_open(FM_BPAMHandle* handle, int mode, const DBG_Opts* opts)
     case OPEN_OUTPUT:
       dcb->dcbmacr.dcbmacr2 = dcbmrwrt|dcbmrpt2;
       break;
+    case OPEN_UPDATE:
+      /* UPDAT needs both READ and WRITE (and POINT/FIND) */
+      dcb->dcbmacr.dcbmacr1 = dcbmrrd|dcbmrpt1;
+      dcb->dcbmacr.dcbmacr2 = dcbmrwrt|dcbmrpt2;
+      break;
     default:
-      errmsg(opts, "bpam_open function only supports INPUT and OUTPUT. %d specified\n", mode);
+      errmsg(opts, "bpam_open function only supports INPUT, OUTPUT and UPDATE. %d specified\n", mode);
       return 4;
   }
 
@@ -113,6 +118,11 @@ static int bpam_open_read(FM_BPAMHandle* handle, const DBG_Opts* opts)
 static int bpam_open_write(FM_BPAMHandle* handle, const DBG_Opts* opts)
 {
   return bpam_open(handle, OPEN_OUTPUT, opts);
+}
+
+static int bpam_open_update(FM_BPAMHandle* handle, const DBG_Opts* opts)
+{
+  return bpam_open(handle, OPEN_UPDATE, opts);
 }
 
 static void validate_var_block(FM_BPAMHandle* bh, const DBG_Opts* opts)
@@ -642,6 +652,8 @@ int read_member_dir_entry(struct desp* PTR32 desp, const DBG_Opts* opts)
   return 0;
 }
 
+/* STOW return code 12 (reason 00) for add/replace: no space left in the PDS directory */
+#define STOW_DIRECTORY_FULL (12)
 const struct stowlist_add stowlistadd_template = { "        ", 0, 0, 0, 0 };
 static void add_mem_stats(struct stowlist_add* PTR32 sla, const struct mstat* mstat, unsigned int ttr, const DBG_Opts* opts)
 {
@@ -650,13 +662,21 @@ static void add_mem_stats(struct stowlist_add* PTR32 sla, const struct mstat* ms
   memcpy(sla->mem_name, mstat->name, strlen(mstat->name)); 
   STOW_SET_TTR((*sla), ttr);
 
-  unsigned int userdata_len = sizeof(struct ispf_disk_stats)/2; /* number of halfwords of ISPF statistics */
-  sla->c = userdata_len;
+  /*
+   * Use the standard 30 byte ISPF statistics unless a line count does not fit in
+   * 16 bits. The extended 40 byte format costs 10 more bytes per directory entry.
+   */
+  int need_ext = mstat->ispf_stats &&
+                 (mstat->ispf_current_lines > USHRT_MAX ||
+                  mstat->ispf_initial_lines > USHRT_MAX ||
+                  mstat->ispf_modified_lines > USHRT_MAX);
+  unsigned int userdata_bytes = need_ext ? EXTENDED_ISPF_DISK_STATS_LEN : ISPF_STD_DISK_STATS_LEN;
+  sla->c = userdata_bytes / 2; /* number of halfwords of ISPF statistics */
 
   struct ispf_disk_stats ids = { 0 };
   __getuserid(userid, sizeof(userid));
 
-  ids.extended = 1;
+  ids.extended = need_ext ? 1 : 0;
   time_t t;
   struct tm * ltime;
 
@@ -678,24 +698,25 @@ static void add_mem_stats(struct stowlist_add* PTR32 sla, const struct mstat* ms
     ids.ver_num = mstat->ispf_version;
     ids.mod_num = mstat->ispf_modification;
 
-    ids.full_curr_num_lines = mstat->ispf_current_lines; 
-    ids.full_init_num_lines = mstat->ispf_initial_lines; 
-    ids.full_mod_num_lines = mstat->ispf_modified_lines;
-
-    if (mstat->ispf_current_lines < SHRT_MAX) {
+    if (need_ext) {
+      ids.full_curr_num_lines = mstat->ispf_current_lines;
+      ids.full_init_num_lines = mstat->ispf_initial_lines;
+      ids.full_mod_num_lines = mstat->ispf_modified_lines;
+    } else {
       ids.curr_num_lines = mstat->ispf_current_lines;
-    }
-    if (mstat->ispf_initial_lines < SHRT_MAX) {
       ids.init_num_lines = mstat->ispf_initial_lines;
-    }
-    if (mstat->ispf_modified_lines < SHRT_MAX) {
       ids.mod_num_lines = mstat->ispf_modified_lines;
     }
   } else {
     tm_to_pdjd(&ids.create_century, ids.pd_create_julian, ltime);
   }
 
-  memcpy(sla->user_data, &ids, sizeof(struct ispf_disk_stats));
+  memcpy(sla->user_data, &ids, userdata_bytes);
+  if (!need_ext) {
+    /* Standard format: bytes 29-30 are blank (EBCDIC space) */
+    sla->user_data[ISPF_DISK_STATS_LEN] = 0x40;
+    sla->user_data[ISPF_DISK_STATS_LEN + 1] = 0x40;
+  }
 }
 
 static int write_pds_member_dir_entry(struct ihadcb* PTR32 dcb, const char* member, struct stowlist_add* stowlistadd, const DBG_Opts* opts)
@@ -710,9 +731,13 @@ static int write_pds_member_dir_entry(struct ihadcb* PTR32 dcb, const char* memb
   stowlist->add = *stowlistadd;
 
   int rc = STOW(stowlist, dcb, STOW_R);
+  FREE24(stowlist, sizeof(struct stowlist_add));
   if (rc == STOW_REPLACE_MEMBER_DOES_NOT_EXIST || rc == STOW_CC_OK) {
     debug(opts, "Member %s successfully replaced\n", member);
     rc = 0;
+  } else if ((rc & 0xFFFF) == STOW_DIRECTORY_FULL) {
+    errmsg(opts, "PDS directory is full - unable to write directory entry for member %s (STOW rc:%d reason:%d)\n",
+           member, rc & 0xFFFF, (rc >> 16) & 0xFFFF);
   } else {
     errmsg(opts, "STOW REPLACE failed for PDS member %s with rc:%d\n", member, rc);
   }
@@ -720,22 +745,35 @@ static int write_pds_member_dir_entry(struct ihadcb* PTR32 dcb, const char* memb
   return rc;
 }
 
+/*
+ * Update the directory entry of an existing member using STOW IFF (PDSE).
+ * Returns STOW_IFF_CC_PDS_UPDATE_UNSUPPORTED when the caller should use STOW R instead
+ * (PDS, or no extended attributes/timestamp available from DESERV).
+ */
 static int update_pdse_member_dir_entry(FM_BPAMHandle* bh, const char* member, union stowlist* stowlist, const DBG_Opts* opts)
 {
-  int rc;
+  int rc = 4;
   struct desp* PTR32 desp = init_desp(bh, member, opts);
+  if (!desp) {
+    return rc;
+  }
   if (!read_member_dir_entry(desp, opts)) {
     /*
      * Try again and perform an UPDATE
      */
     struct smde* PTR32 smde = (struct smde* PTR32) (desp->desp_area_ptr->desb_data);
-    struct smde_ext_attr* PTR32 ext_attr = (struct smde_ext_attr*) (((char*) smde) + smde->smde_ext_attr_off);
-    memcpy(stowlist->iff.timestamp, ext_attr->smde_change_timestamp, STOWLIST_IFF_TIMESTAMP_LEN);
-    rc = STOW(stowlist, NULL, STOW_IFF);
-    if (rc != STOW_CC_OK) {
-      errmsg(opts, "STOW failed for PDSE member update of %s with rc:%d\n", member, rc);
+    if (smde->smde_ext_attr_off == 0) {
+      rc = STOW_IFF_CC_PDS_UPDATE_UNSUPPORTED;
+    } else {
+      struct smde_ext_attr* PTR32 ext_attr = (struct smde_ext_attr*) (((char*) smde) + smde->smde_ext_attr_off);
+      memcpy(stowlist->iff.timestamp, ext_attr->smde_change_timestamp, STOWLIST_IFF_TIMESTAMP_LEN);
+      rc = STOW(stowlist, NULL, STOW_IFF);
+      if (rc != STOW_CC_OK && rc != STOW_IFF_CC_PDS_UPDATE_UNSUPPORTED) {
+        errmsg(opts, "STOW failed for PDSE member update of %s with rc:0x%x\n", member, rc);
+      }
     }
   }
+  free_desp(desp, opts);
   return rc;
 }
 
@@ -762,28 +800,44 @@ int write_member_dir_entry(const struct mstat* mstat, FM_BPAMHandle* bh, const D
   stowlist->iff.direntry = stowlistadd;
   stowlist->iff.ccsid = mstat->ext_ccsid;
 
-  /*
-   * Assume the is a PDSE and we can STOW with IFF.
-   * Also assume the member does not exist yet.
-   */
-  rc = STOW(stowlist, NULL, STOW_IFF);
-  switch (rc) {
-    case STOW_IFF_CC_CREATE_OK:
-      rc = 0;
-      break;
-    case STOW_IFF_CC_PDS_UPDATE_UNSUPPORTED:
-      debug(opts, "Member %s is in a PDS - do a STOW and not a STOW_IFF\n", mstat->name);
-      free(stowlist);
+  if (bh->update_existing) {
+    /*
+     * DCB was opened for UPDAT and positioned with FIND on an existing member.
+     * Do not attempt a create. Use STOW IFF update for a PDSE; fall back to
+     * STOW R for a PDS (or when no PDSE timestamp is available).
+     */
+    rc = update_pdse_member_dir_entry(bh, mstat->name, stowlist, opts);
+    if (rc == STOW_IFF_CC_PDS_UPDATE_UNSUPPORTED) {
+      debug(opts, "Member %s: no STOW IFF update possible - do a STOW R\n", mstat->name);
       rc = write_pds_member_dir_entry(bh->dcb, mstat->name, stowlistadd, opts);
-      break;
-    case STOW_IFF_CC_MEMBER_EXISTS:
-      debug(opts, "Member %s already exists - update it.\n", mstat->name);
-      rc = update_pdse_member_dir_entry(bh, mstat->name, stowlist, opts);
-      break;
-    default:
-      errmsg(opts, "STOW failed for member %s create. rc:0x%x\n", mstat->name, rc);
-      break;
+    } else if (rc == STOW_CC_OK) {
+      rc = 0;
+    }
+  } else {
+    /*
+     * Assume the is a PDSE and we can STOW with IFF.
+     * Also assume the member does not exist yet.
+     */
+    rc = STOW(stowlist, NULL, STOW_IFF);
+    switch (rc) {
+      case STOW_IFF_CC_CREATE_OK:
+        rc = 0;
+        break;
+      case STOW_IFF_CC_PDS_UPDATE_UNSUPPORTED:
+        debug(opts, "Member %s is in a PDS - do a STOW and not a STOW_IFF\n", mstat->name);
+        rc = write_pds_member_dir_entry(bh->dcb, mstat->name, stowlistadd, opts);
+        break;
+      case STOW_IFF_CC_MEMBER_EXISTS:
+        debug(opts, "Member %s already exists - update it.\n", mstat->name);
+        rc = update_pdse_member_dir_entry(bh, mstat->name, stowlist, opts);
+        break;
+      default:
+        errmsg(opts, "STOW failed for member %s create. rc:0x%x\n", mstat->name, rc);
+        break;
+    }
   }
+  FREE24(stowlist, sizeof(struct stowlist_iff));
+  FREE24(stowlistadd, sizeof(struct stowlist_add));
   return rc;
 }
 
@@ -813,6 +867,18 @@ static int alloc_pds(const char* dataset, FM_BPAMHandle* bh, const DBG_Opts* opt
   return 0;
 }
 
+/*
+ * Release the system generated DD allocated by alloc_pds
+ */
+static void free_pds_dd(const char* ddname, const DBG_Opts* opts)
+{
+  struct s99_common_text_unit dd = { DUNDDNAM, 1, 0, 0 };
+  int ddname_len = strlen(ddname);
+  dd.s99tulng = ddname_len;
+  memcpy(dd.s99tupar, ddname, ddname_len);
+  ddfree(&dd, opts);
+}
+
 FM_BPAMHandle* open_pds_for_read(const char* dataset, const DBG_Opts* opts)
 {
   FM_BPAMHandle * bh = calloc(sizeof(FM_BPAMHandle), 1);
@@ -820,14 +886,17 @@ FM_BPAMHandle* open_pds_for_read(const char* dataset, const DBG_Opts* opts)
     return bh;
   }
   int rc = alloc_pds(dataset, bh, opts);
-  if (!rc) {
-    rc = bpam_open_read(bh, opts);
-  }
   if (rc) {
+    free(bh);
     return NULL;
-  } else {
-    return bh;
   }
+  rc = bpam_open_read(bh, opts);
+  if (rc) {
+    free_pds_dd(bh->ddname, opts);
+    free(bh);
+    return NULL;
+  }
+  return bh;
 }
 
 FM_BPAMHandle* open_pds_for_write(const char* dataset, const DBG_Opts* opts)
@@ -837,14 +906,45 @@ FM_BPAMHandle* open_pds_for_write(const char* dataset, const DBG_Opts* opts)
     return bh;
   }
   int rc = alloc_pds(dataset, bh, opts);
-  if (!rc) {
-    rc = bpam_open_write(bh, opts);
-  }
   if (rc) {
+    free(bh);
     return NULL;
-  } else {
+  }
+  rc = bpam_open_write(bh, opts);
+  if (rc) {
+    free_pds_dd(bh->ddname, opts);
+    free(bh);
+    return NULL;
+  }
+  return bh;
+}
+
+/*
+ * open_pds_for_update: like open_pds_for_write but opens the DCB for UPDAT so that the
+ * directory entry of an EXISTING member can be altered without rewriting the member.
+ * Position with find_member before calling writememdir_entry. Works for PDS (STOW R)
+ * and PDSE (STOW IFF update). Call close_pds to free the underlying resources.
+ */
+
+FM_BPAMHandle* open_pds_for_update(const char* dataset, const DBG_Opts* opts)
+{
+  FM_BPAMHandle*bh = calloc(sizeof(FM_BPAMHandle), 1);
+  if (!bh) {
     return bh;
   }
+  int rc = alloc_pds(dataset, bh, opts);
+  if (rc) {
+    free(bh);
+    return NULL;
+  }
+  rc = bpam_open_update(bh, opts);
+  if (rc) {
+    free_pds_dd(bh->ddname, opts);
+    free(bh);
+    return NULL;
+  }
+  bh->update_existing = 1;
+  return bh;
 }
 
 int close_pds(FM_BPAMHandle* bh, const DBG_Opts* opts)
@@ -892,6 +992,11 @@ int close_pds(FM_BPAMHandle* bh, const DBG_Opts* opts)
            bh->ddname, rc);
   }
 
+  /* release DCB, DECB and Block now that CLOSE has completed */
+  FREE24(bh->block, bh->block_size);
+  FREE24(bh->decb, sizeof(struct decb));
+  FREE31(bh->opencb);
+  dcb_free(bh->dcb);
   free(bh);
 
   return rc;
@@ -973,6 +1078,7 @@ struct desp* PTR32 find_desp(FM_BPAMHandle* bh, const char* memname, const DBG_O
       errmsg(opts, "Unable to PERFORM DESERV. rc:0x%x rsn:0x%x\n", rc,
              desp->desp_name_list_ptr->desl_errcode);
     }
+    free_desp(desp, opts);
     return NULL;
   }
 

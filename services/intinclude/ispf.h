@@ -37,6 +37,8 @@
 
   #define EXTENDED_ISPF_DISK_STATS_LEN (sizeof(struct ispf_disk_stats))
   #define ISPF_DISK_STATS_LEN (EXTENDED_ISPF_DISK_STATS_LEN - (sizeof(unsigned int)*3))
+  /* Standard (non-extended) user data is the 28 byte struct plus 2 blank pad bytes */
+  #define ISPF_STD_DISK_STATS_LEN (ISPF_DISK_STATS_LEN + 2)
 
   struct ispf_stats {
     struct tm create_time;
