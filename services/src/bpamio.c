@@ -652,6 +652,8 @@ int read_member_dir_entry(struct desp* PTR32 desp, const DBG_Opts* opts)
   return 0;
 }
 
+/* STOW return code 12 (reason 00) for add/replace: no space left in the PDS directory */
+#define STOW_DIRECTORY_FULL (12)
 const struct stowlist_add stowlistadd_template = { "        ", 0, 0, 0, 0 };
 static void add_mem_stats(struct stowlist_add* PTR32 sla, const struct mstat* mstat, unsigned int ttr, const DBG_Opts* opts)
 {
@@ -660,13 +662,21 @@ static void add_mem_stats(struct stowlist_add* PTR32 sla, const struct mstat* ms
   memcpy(sla->mem_name, mstat->name, strlen(mstat->name)); 
   STOW_SET_TTR((*sla), ttr);
 
-  unsigned int userdata_len = sizeof(struct ispf_disk_stats)/2; /* number of halfwords of ISPF statistics */
-  sla->c = userdata_len;
+  /*
+   * Use the standard 30 byte ISPF statistics unless a line count does not fit in
+   * 16 bits. The extended 40 byte format costs 10 more bytes per directory entry.
+   */
+  int need_ext = mstat->ispf_stats &&
+                 (mstat->ispf_current_lines > USHRT_MAX ||
+                  mstat->ispf_initial_lines > USHRT_MAX ||
+                  mstat->ispf_modified_lines > USHRT_MAX);
+  unsigned int userdata_bytes = need_ext ? EXTENDED_ISPF_DISK_STATS_LEN : ISPF_STD_DISK_STATS_LEN;
+  sla->c = userdata_bytes / 2; /* number of halfwords of ISPF statistics */
 
   struct ispf_disk_stats ids = { 0 };
   __getuserid(userid, sizeof(userid));
 
-  ids.extended = 1;
+  ids.extended = need_ext ? 1 : 0;
   time_t t;
   struct tm * ltime;
 
@@ -688,24 +698,25 @@ static void add_mem_stats(struct stowlist_add* PTR32 sla, const struct mstat* ms
     ids.ver_num = mstat->ispf_version;
     ids.mod_num = mstat->ispf_modification;
 
-    ids.full_curr_num_lines = mstat->ispf_current_lines; 
-    ids.full_init_num_lines = mstat->ispf_initial_lines; 
-    ids.full_mod_num_lines = mstat->ispf_modified_lines;
-
-    if (mstat->ispf_current_lines < SHRT_MAX) {
+    if (need_ext) {
+      ids.full_curr_num_lines = mstat->ispf_current_lines;
+      ids.full_init_num_lines = mstat->ispf_initial_lines;
+      ids.full_mod_num_lines = mstat->ispf_modified_lines;
+    } else {
       ids.curr_num_lines = mstat->ispf_current_lines;
-    }
-    if (mstat->ispf_initial_lines < SHRT_MAX) {
       ids.init_num_lines = mstat->ispf_initial_lines;
-    }
-    if (mstat->ispf_modified_lines < SHRT_MAX) {
       ids.mod_num_lines = mstat->ispf_modified_lines;
     }
   } else {
     tm_to_pdjd(&ids.create_century, ids.pd_create_julian, ltime);
   }
 
-  memcpy(sla->user_data, &ids, sizeof(struct ispf_disk_stats));
+  memcpy(sla->user_data, &ids, userdata_bytes);
+  if (!need_ext) {
+    /* Standard format: bytes 29-30 are blank (EBCDIC space) */
+    sla->user_data[ISPF_DISK_STATS_LEN] = 0x40;
+    sla->user_data[ISPF_DISK_STATS_LEN + 1] = 0x40;
+  }
 }
 
 static int write_pds_member_dir_entry(struct ihadcb* PTR32 dcb, const char* member, struct stowlist_add* stowlistadd, const DBG_Opts* opts)
@@ -724,6 +735,9 @@ static int write_pds_member_dir_entry(struct ihadcb* PTR32 dcb, const char* memb
   if (rc == STOW_REPLACE_MEMBER_DOES_NOT_EXIST || rc == STOW_CC_OK) {
     debug(opts, "Member %s successfully replaced\n", member);
     rc = 0;
+  } else if ((rc & 0xFFFF) == STOW_DIRECTORY_FULL) {
+    errmsg(opts, "PDS directory is full - unable to write directory entry for member %s (STOW rc:%d reason:%d)\n",
+           member, rc & 0xFFFF, (rc >> 16) & 0xFFFF);
   } else {
     errmsg(opts, "STOW REPLACE failed for PDS member %s with rc:%d\n", member, rc);
   }
@@ -853,6 +867,18 @@ static int alloc_pds(const char* dataset, FM_BPAMHandle* bh, const DBG_Opts* opt
   return 0;
 }
 
+/*
+ * Release the system generated DD allocated by alloc_pds
+ */
+static void free_pds_dd(const char* ddname, const DBG_Opts* opts)
+{
+  struct s99_common_text_unit dd = { DUNDDNAM, 1, 0, 0 };
+  int ddname_len = strlen(ddname);
+  dd.s99tulng = ddname_len;
+  memcpy(dd.s99tupar, ddname, ddname_len);
+  ddfree(&dd, opts);
+}
+
 FM_BPAMHandle* open_pds_for_read(const char* dataset, const DBG_Opts* opts)
 {
   FM_BPAMHandle * bh = calloc(sizeof(FM_BPAMHandle), 1);
@@ -860,14 +886,17 @@ FM_BPAMHandle* open_pds_for_read(const char* dataset, const DBG_Opts* opts)
     return bh;
   }
   int rc = alloc_pds(dataset, bh, opts);
-  if (!rc) {
-    rc = bpam_open_read(bh, opts);
-  }
   if (rc) {
+    free(bh);
     return NULL;
-  } else {
-    return bh;
   }
+  rc = bpam_open_read(bh, opts);
+  if (rc) {
+    free_pds_dd(bh->ddname, opts);
+    free(bh);
+    return NULL;
+  }
+  return bh;
 }
 
 FM_BPAMHandle* open_pds_for_write(const char* dataset, const DBG_Opts* opts)
@@ -877,14 +906,17 @@ FM_BPAMHandle* open_pds_for_write(const char* dataset, const DBG_Opts* opts)
     return bh;
   }
   int rc = alloc_pds(dataset, bh, opts);
-  if (!rc) {
-    rc = bpam_open_write(bh, opts);
-  }
   if (rc) {
+    free(bh);
     return NULL;
-  } else {
-    return bh;
   }
+  rc = bpam_open_write(bh, opts);
+  if (rc) {
+    free_pds_dd(bh->ddname, opts);
+    free(bh);
+    return NULL;
+  }
+  return bh;
 }
 
 /*
@@ -901,15 +933,18 @@ FM_BPAMHandle* open_pds_for_update(const char* dataset, const DBG_Opts* opts)
     return bh;
   }
   int rc = alloc_pds(dataset, bh, opts);
-  if (!rc) {
-    rc = bpam_open_update(bh, opts);
-  }
   if (rc) {
+    free(bh);
     return NULL;
-  } else {
-    bh->update_existing = 1;
-    return bh;
   }
+  rc = bpam_open_update(bh, opts);
+  if (rc) {
+    free_pds_dd(bh->ddname, opts);
+    free(bh);
+    return NULL;
+  }
+  bh->update_existing = 1;
+  return bh;
 }
 
 int close_pds(FM_BPAMHandle* bh, const DBG_Opts* opts)
@@ -957,6 +992,11 @@ int close_pds(FM_BPAMHandle* bh, const DBG_Opts* opts)
            bh->ddname, rc);
   }
 
+  /* release DCB, DECB and Block now that CLOSE has completed */
+  FREE24(bh->block, bh->block_size);
+  FREE24(bh->decb, sizeof(struct decb));
+  FREE31(bh->opencb);
+  dcb_free(bh->dcb);
   free(bh);
 
   return rc;
@@ -1038,6 +1078,7 @@ struct desp* PTR32 find_desp(FM_BPAMHandle* bh, const char* memname, const DBG_O
       errmsg(opts, "Unable to PERFORM DESERV. rc:0x%x rsn:0x%x\n", rc,
              desp->desp_name_list_ptr->desl_errcode);
     }
+    free_desp(desp, opts);
     return NULL;
   }
 

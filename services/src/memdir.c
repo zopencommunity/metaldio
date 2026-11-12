@@ -558,6 +558,7 @@ int readmemdir_entry(FM_BPAMHandle* bh, const char* mem, struct mstat* mstat, co
 
   if (!smde_to_mstat(smde, mstat, opts)) {
     errmsg(opts, "Unable to copy statistics from smde for %s.\n", mem);
+    free_desp(desp, opts);
     return 4;
   }
 
